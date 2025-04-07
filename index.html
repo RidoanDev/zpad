@@ -25,11 +25,54 @@
 
     let editNoteId = null;
     let matrixInterval;
+    let isTypingSoundEnabled = true;
+    let isDarkMode = true;
+    let currentTheme = {
+      primary: "#0F0",
+      secondary: "#000",
+      text: "#0F0",
+      accent: "#0F0"
+    };
+
+    // Sound effects
+    const playSound = (type) => {
+      if (!isTypingSoundEnabled) return;
+      
+      const sounds = {
+        click: [130, 140, 150, 160],
+        success: [523, 659, 784],
+        error: [110, 73, 55],
+        delete: [349, 330, 311],
+        typing: [200 + Math.random() * 300]
+      };
+      
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      oscillator.type = "square";
+      gainNode.gain.value = 0.1;
+      
+      const frequencies = sounds[type] || sounds.click;
+      let currentTime = audioCtx.currentTime;
+      
+      frequencies.forEach((freq, i) => {
+        oscillator.frequency.setValueAtTime(freq, currentTime);
+        currentTime += 0.1;
+      });
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.3);
+    };
 
     function showAlert(message, type = 'info') {
       const alertBox = document.getElementById('alert-box');
       alertBox.textContent = message;
       alertBox.className = `alert ${type} show`;
+      playSound(type === 'error' ? 'error' : 'success');
       setTimeout(() => alertBox.classList.remove('show'), 3000);
     }
 
@@ -38,20 +81,27 @@
         showAlert("Title and note content cannot be empty!", 'error');
         return;
       }
+      
+      // Add encryption (basic example - for real security use proper encryption)
+      const encryptedContent = btoa(encodeURIComponent(noteContent));
+      const encryptedTitle = btoa(encodeURIComponent(noteTitle));
+      
       const noteId = editNoteId || Date.now().toString();
       await set(ref(database, `users/${userId}/notes/${noteId}`), {
-        title: noteTitle,
-        content: noteContent,
+        title: encryptedTitle,
+        content: encryptedContent,
         timestamp: new Date().toISOString(),
-        pinned: false
+        pinned: false,
+        color: currentTheme.primary
       });
+      
       showAlert("Note saved successfully!", 'success');
       editNoteId = null;
       document.getElementById('note-title').value = "";
       document.getElementById('note-content').value = "";
+      playSound('success');
     }
 
-    // Add this function for resetting the password
     function resetPassword() {
       const email = document.getElementById('email').value;
       if (!email) {
@@ -63,39 +113,79 @@
         .catch(err => showAlert(err.message, 'error'));
     }
 
-    window.editNote = function(noteId, noteTitle, noteContent) {
-      document.getElementById('note-title').value = noteTitle;
-      document.getElementById('note-content').value = noteContent;
+    window.editNote = function(noteId, noteTitle, noteContent, noteColor) {
+      // Decrypt content
+      const decryptedTitle = decodeURIComponent(atob(noteTitle));
+      const decryptedContent = decodeURIComponent(atob(noteContent));
+      
+      document.getElementById('note-title').value = decryptedTitle;
+      document.getElementById('note-content').value = decryptedContent;
       editNoteId = noteId;
+      currentTheme.primary = noteColor || "#0F0";
+      applyTheme();
       showAlert("Editing note...", 'info');
+      playSound('click');
     };
 
     window.deleteNote = async function(userId, noteId) {
-      await remove(ref(database, `users/${userId}/notes/${noteId}`));
-      showAlert("Note deleted successfully!", 'success');
+      if (confirm("Are you sure you want to delete this note?")) {
+        await remove(ref(database, `users/${userId}/notes/${noteId}`));
+        showAlert("Note deleted successfully!", 'success');
+        playSound('delete');
+      }
     };
 
     window.pinNote = async function(userId, noteId, isPinned) {
       await set(ref(database, `users/${userId}/notes/${noteId}/pinned`), !isPinned);
       showAlert(`Note ${isPinned ? "unpinned" : "pinned"}!`, 'success');
+      playSound('click');
     };
 
     window.viewNote = function(noteTitle, noteContent) {
-      alert(`Title: ${noteTitle}\n\n${noteContent}`);
+      const decryptedTitle = decodeURIComponent(atob(noteTitle));
+      const decryptedContent = decodeURIComponent(atob(noteContent));
+      
+      const modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <span class="close-modal">&times;</span>
+          <h2>${decryptedTitle}</h2>
+          <pre>${decryptedContent}</pre>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      
+      modal.querySelector('.close-modal').addEventListener('click', () => {
+        document.body.removeChild(modal);
+      });
+      
+      playSound('click');
     };
 
     window.shareNote = function(noteTitle, noteContent) {
+      const decryptedTitle = decodeURIComponent(atob(noteTitle));
+      const decryptedContent = decodeURIComponent(atob(noteContent));
+      
       if (navigator.share) {
         navigator.share({
-          title: noteTitle,
-          text: noteContent,
+          title: decryptedTitle,
+          text: decryptedContent,
           url: window.location.href
         })
         .then(() => showAlert("Note shared successfully!", 'success'))
         .catch(err => showAlert("Error sharing note.", 'error'));
       } else {
-        showAlert("Sharing not supported on this device.", 'error');
+        // Fallback for browsers without Web Share API
+        const textArea = document.createElement('textarea');
+        textArea.value = `${decryptedTitle}\n\n${decryptedContent}`;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        showAlert("Note copied to clipboard!", 'success');
       }
+      playSound('click');
     };
 
     function fetchNotes(userId, searchQuery = "") {
@@ -103,32 +193,121 @@
         const notesContainer = document.getElementById('notes-container');
         notesContainer.innerHTML = "";
         const data = snapshot.val();
+        
         if (data) {
           Object.entries(data)
-            .filter(([id, note]) => note.title.toLowerCase().includes(searchQuery.toLowerCase()) || note.content.toLowerCase().includes(searchQuery.toLowerCase()))
+            .filter(([id, note]) => {
+              try {
+                const decryptedTitle = decodeURIComponent(atob(note.title));
+                const decryptedContent = decodeURIComponent(atob(note.content));
+                return decryptedTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                       decryptedContent.toLowerCase().includes(searchQuery.toLowerCase());
+              } catch {
+                return false;
+              }
+            })
             .sort((a, b) => b[1].pinned - a[1].pinned)
             .forEach(([id, note]) => {
+              const decryptedTitle = decodeURIComponent(atob(note.title));
+              const decryptedContent = decodeURIComponent(atob(note.content));
+              
               notesContainer.innerHTML += `
-                <div class="note ${note.pinned ? 'pinned' : ''}">
-                  <h3>${note.title}</h3>
-                  <p>${note.content}</p>
-                  <button class="hacker-btn" onclick="editNote('${id}', '${note.title}', '${note.content}')">Edit</button>
-                  <button class="hacker-btn" onclick="deleteNote('${userId}', '${id}')">Delete</button>
-                  <button class="hacker-btn" onclick="pinNote('${userId}', '${id}', ${note.pinned})">${note.pinned ? 'Unpin' : 'Pin'}</button>
-                  <button class="hacker-btn" onclick="shareNote('${note.title}', '${note.content}')">  Share </button>
+                <div class="note ${note.pinned ? 'pinned' : ''}" style="border-color: ${note.color || currentTheme.primary}">
+                  <h3>${decryptedTitle}</h3>
+                  <p>${decryptedContent}</p>
+                  <div class="note-actions">
+                    <button class="hacker-btn" onclick="editNote('${id}', '${note.title}', '${note.content}', '${note.color || currentTheme.primary}')">✎ᝰ</button>
+                    <button class="hacker-btn" onclick="deleteNote('${userId}', '${id}')">⌦</button>
+                    <button class="hacker-btn" onclick="pinNote('${userId}', '${id}', ${note.pinned})">${note.pinned ? '⚘.' : '⚲'}</button>
+                    <button class="hacker-btn" onclick="viewNote('${note.title}', '${note.content}')">👁</button>
+                    <button class="hacker-btn" onclick="shareNote('${note.title}', '${note.content}')">જ✈︎</button>
+                  </div>
                 </div>
               `;
             });
         } else {
-          notesContainer.innerHTML = "<p>No notes found!</p>";
+          notesContainer.innerHTML = "<p>No notes found! Start by creating one.</p>";
         }
       });
     }
 
+    function applyTheme() {
+      document.documentElement.style.setProperty('--primary', currentTheme.primary);
+      document.documentElement.style.setProperty('--secondary', currentTheme.secondary);
+      document.documentElement.style.setProperty('--text', currentTheme.text);
+      document.documentElement.style.setProperty('--accent', currentTheme.accent);
+    }
+
+    function toggleTheme() {
+      isDarkMode = !isDarkMode;
+      if (isDarkMode) {
+        currentTheme = {
+          primary: "#0F0",
+          secondary: "#000",
+          text: "#0F0",
+          accent: "#0F0"
+        };
+      } else {
+        currentTheme = {
+          primary: "#0066FF",
+          secondary: "#111",
+          text: "#FFF",
+          accent: "#00FFCC"
+        };
+      }
+      applyTheme();
+      showAlert(`Switched to ${isDarkMode ? 'Hacker' : 'Cyber'} theme`, 'success');
+      playSound('click');
+    }
+
+    function toggleTypingSound() {
+      isTypingSoundEnabled = !isTypingSoundEnabled;
+      showAlert(`Typing sounds ${isTypingSoundEnabled ? 'enabled' : 'disabled'}`, 'success');
+      playSound('click');
+    }
+
+    function startTerminalEffect() {
+      const terminal = document.getElementById('terminal-effect');
+      const commands = [
+        "> Initializing Zpad Pro...",
+        "> Loading secure modules...",
+        "> Establishing encrypted connection...",
+        "> Authentication protocols engaged...",
+        "> Ready for input"
+      ];
+      
+      let i = 0;
+      terminal.innerHTML = "";
+      terminal.style.display = "block";
+      
+      const typeWriter = () => {
+        if (i < commands.length) {
+          terminal.innerHTML += `<div>${commands[i]}</div>`;
+          terminal.scrollTop = terminal.scrollHeight;
+          i++;
+          setTimeout(typeWriter, 500);
+        } else {
+          setTimeout(() => {
+            terminal.style.display = "none";
+          }, 2000);
+        }
+      };
+      
+      typeWriter();
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
+      // Set initial theme
+      applyTheme();
+      
+      // Play startup sound
+      playSound('success');
+      
+      // Add event listeners with sound effects
       document.getElementById('signup-btn').addEventListener('click', () => {
         const email = document.getElementById('email').value;
         const password = document.getElementById('password').value;
+        playSound('click');
         createUserWithEmailAndPassword(auth, email, password)
           .then(() => showAlert("Sign up successful!", 'success'))
           .catch(err => showAlert(err.message, 'error'));
@@ -137,15 +316,18 @@
       document.getElementById('login-btn').addEventListener('click', () => {
         const email = document.getElementById('email').value;
         const password = document.getElementById('password').value;
+        playSound('click');
         signInWithEmailAndPassword(auth, email, password)
           .then((userCredential) => {
             fetchNotes(userCredential.user.uid);
             showAlert("Login successful!", 'success');
+            startTerminalEffect();
           })
           .catch(err => showAlert(err.message, 'error'));
       });
 
       document.getElementById('logout-btn').addEventListener('click', () => {
+        playSound('click');
         signOut(auth).then(() => {
           document.getElementById('notes-container').innerHTML = "<p>Please log in to see notes.</p>";
           showAlert("Logged out successfully!", 'success');
@@ -156,13 +338,18 @@
         const user = auth.currentUser;
         const noteTitle = document.getElementById('note-title').value;
         const noteContent = document.getElementById('note-content').value;
+        playSound('click');
         if (user) saveNote(user.uid, noteTitle, noteContent);
         else showAlert("Please log in to save notes!", 'error');
       });
 
-      document.getElementById('reset-password-btn').addEventListener('click', resetPassword);
+      document.getElementById('reset-password-btn').addEventListener('click', () => {
+        playSound('click');
+        resetPassword();
+      });
 
       document.getElementById('search-input').addEventListener('input', (e) => {
+        playSound('typing');
         const user = auth.currentUser;
         if (user) {
           fetchNotes(user.uid, e.target.value);
@@ -170,104 +357,199 @@
       });
 
       document.getElementById('start-matrix-btn').addEventListener('click', () => {
+        playSound('click');
         startMatrixAnimation();
       });
 
       document.getElementById('stop-matrix-btn').addEventListener('click', () => {
+        playSound('click');
         stopMatrixAnimation();
       });
+
+      document.getElementById('theme-toggle-btn').addEventListener('click', () => {
+        toggleTheme();
+      });
+
+      document.getElementById('sound-toggle-btn').addEventListener('click', () => {
+        toggleTypingSound();
+      });
+
+      // Add typing sound to text inputs
+      document.getElementById('note-title').addEventListener('keydown', () => playSound('typing'));
+      document.getElementById('note-content').addEventListener('keydown', () => playSound('typing'));
+      document.getElementById('search-input').addEventListener('keydown', () => playSound('typing'));
     });
 
-    // Matrix animation function
+    // Enhanced Matrix animation
     function startMatrixAnimation() {
       const canvas = document.getElementById('matrix-canvas');
       const ctx = canvas.getContext('2d');
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
 
-      const columns = canvas.width / 20;
-      const drops = Array(Math.floor(columns)).fill(0);
+      const katakana = 'アァカサタナハマヤャラワガザダバパイィキシチニヒミリヰギジヂビピウゥクスツヌフムユュルグズブヅプエェケセテネヘメレヱゲゼデベペオォコソトノホモヨョロヲゴゾドボポヴッン';
+      const latin = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      const nums = '0123456789';
+      const symbols = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
+      const alphabet = katakana + latin + nums + symbols;
+
+      const fontSize = 16;
+      const columns = canvas.width / fontSize;
+      const rainDrops = Array(Math.floor(columns)).fill(0);
 
       function draw() {
-        ctx.fillStyle = "rgba(0, 0, 0, 0.05)";
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#0F0";
-        ctx.font = "20px monospace";
+        ctx.fillStyle = currentTheme.primary;
+        ctx.font = fontSize + 'px monospace';
 
-        for (let i = 0; i < drops.length; i++) {
-          const char = Math.random() > 0.5 ? '1' : '0';
-          ctx.fillText(char, i * 20, drops[i] * 20);
-
-          if (drops[i] * 20 > canvas.height && Math.random() > 0.975) {
-            drops[i] = 0;
+        for (let i = 0; i < rainDrops.length; i++) {
+          const text = alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+          ctx.fillText(text, i * fontSize, rainDrops[i] * fontSize);
+          
+          if (rainDrops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+            rainDrops[i] = 0;
           }
-
-          drops[i]++;
+          rainDrops[i]++;
         }
       }
 
-      matrixInterval = setInterval(draw, 33); // 30 FPS
+      matrixInterval = setInterval(draw, 30);
     }
 
     function stopMatrixAnimation() {
       clearInterval(matrixInterval);
+      const canvas = document.getElementById('matrix-canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
   </script>
 
   <style>
+    :root {
+      --primary: #0F0;
+      --secondary: #000;
+      --text: #0F0;
+      --accent: #0F0;
+    }
+
     /* Global Styles */
     body {
-      background-color: #000;
-      color: #0F0;
+      background-color: var(--secondary);
+      color: var(--text);
       font-family: 'Courier New', monospace;
       text-align: center;
       margin: 0;
       padding: 0;
+      transition: all 0.3s ease;
     }
+    
     header {
       font-size: 2em;
       margin-top: 20px;
+      text-shadow: 0 0 10px var(--primary);
     }
+    
     .hacker-btn {
-      background-color: #0F0;
-      color: #000;
+      background-color: var(--primary);
+      color: var(--secondary);
       border: none;
       margin: 5px;
       cursor: pointer;
-      box-shadow: 0 0 10px #0F0;
+      box-shadow: 0 0 10px var(--primary);
       padding: 10px;
+      border-radius: 3px;
+      transition: all 0.2s ease;
     }
+    
+    .hacker-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 15px var(--accent);
+    }
+    
     textarea, input {
-      background: #000;
-      border: 1px solid #0F0;
-      color: #0F0;
+      background: var(--secondary);
+      border: 1px solid var(--primary);
+      color: var(--text);
       padding: 10px;
       width: 90%;
-      box-shadow: 0 0 5px #0F0;
+      box-shadow: 0 0 5px var(--primary);
+      margin: 10px 0;
+      transition: all 0.3s ease;
     }
+    
+    textarea:focus, input:focus {
+      outline: none;
+      box-shadow: 0 0 10px var(--accent);
+    }
+    
     .note {
-      border: 1px solid #0F0;
-      padding: 10px;
+      border: 1px solid var(--primary);
+      padding: 15px;
       margin: 10px;
       text-align: left;
       background: rgba(0, 0, 0, 0.8);
+      border-radius: 5px;
+      transition: all 0.3s ease;
+      box-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
     }
+    
+    .note:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 0 15px var(--primary);
+    }
+    
     .note.pinned {
       background: rgba(0, 255, 0, 0.1);
+      border-left: 5px solid var(--primary);
     }
+    
+    .note h3 {
+      margin-top: 0;
+      border-bottom: 1px dashed var(--primary);
+      padding-bottom: 5px;
+    }
+    
+    .note-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 10px;
+    }
+    
     .alert {
       visibility: hidden;
-      background: #0F0;
-      color: #000;
-      padding: 10px;
+      background: var(--primary);
+      color: var(--secondary);
+      padding: 15px;
       position: fixed;
       top: 10px;
       width: 80%;
       left: 10%;
-      box-shadow: 0 0 10px #0F0;
+      box-shadow: 0 0 10px var(--primary);
+      border-radius: 5px;
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
     }
+    
     .alert.show {
       visibility: visible;
+      opacity: 1;
+    }
+    
+    .alert.error {
+      background: #F00;
+      box-shadow: 0 0 10px #F00;
+    }
+    
+    .alert.success {
+      background: #0F0;
+      box-shadow: 0 0 10px #0F0;
+    }
+    
+    .alert.info {
+      background: #00F;
+      box-shadow: 0 0 10px #00F;
     }
 
     #matrix-canvas {
@@ -276,49 +558,129 @@
       left: 0;
       z-index: -1;
     }
+    
+    .modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    
+    .modal-content {
+      background: var(--secondary);
+      border: 2px solid var(--primary);
+      padding: 20px;
+      width: 80%;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 0 20px var(--primary);
+      position: relative;
+    }
+    
+    .close-modal {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: var(--primary);
+      font-size: 24px;
+      cursor: pointer;
+    }
+    
+    .close-modal:hover {
+      color: var(--accent);
+    }
+    
+    #terminal-effect {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      color: var(--primary);
+      padding: 20px;
+      font-family: monospace;
+      z-index: 1001;
+      overflow-y: auto;
+    }
+    
+    .toolbar {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 10px 0;
+    }
+    
+    .toolbar button {
+      margin: 5px;
+    }
 
     /* Media Queries */
-    /* For tablets and larger screens */
     @media (min-width: 768px) {
       .hacker-btn {
         font-size: 1.2em;
         padding: 15px;
       }
+      
       textarea, input {
         width: 80%;
       }
+      
       .note {
         width: 60%;
         margin: 20px auto;
       }
+      
+      .toolbar {
+        justify-content: space-around;
+      }
     }
 
-    /* For smaller devices like phones */
     @media (max-width: 767px) {
       .hacker-btn {
         font-size: 0.8em;
         padding: 8px;
       }
+      
       textarea, input {
         width: 100%;
       }
+      
       .note {
         width: 95%;
         margin: 10px auto;
       }
+      
+      .toolbar {
+        justify-content: center;
+      }
     }
 
-    /* For very small mobile screens */
     @media (max-width: 480px) {
       header {
         font-size: 1.5em;
       }
+      
       .note {
         padding: 8px;
       }
+      
       .hacker-btn {
         padding: 5px;
         font-size: 0.7em;
+      }
+      
+      .toolbar button {
+        margin: 2px;
+        padding: 5px;
       }
     }
   </style>
@@ -327,21 +689,36 @@
 <body>
   <header><h2>Zpad</h2></header>
   <div id="alert-box" class="alert"></div>
-  <div>
+  <div id="terminal-effect"></div>
+  
+  <div class="toolbar">
     <input type="email" id="email" placeholder="Email">
     <input type="password" id="password" placeholder="Password">
-    <button class="hacker-btn" id="signup-btn">Register</button>
-    <button class="hacker-btn" id="login-btn">Login</button>
-    <button class="hacker-btn" id="logout-btn">Logout</button>
-    <button class="hacker-btn" id="reset-password-btn">Reset password</button> <!-- Reset Password Button -->
+    <button class="hacker-btn" id="signup-btn">ꗃ Sign Up</button>
+    <button class="hacker-btn" id="login-btn">ꄗ Login</button>
+    <button class="hacker-btn" id="logout-btn">↪ Logout</button>
+    <button class="hacker-btn" id="reset-password-btn">♻ Reset</button>
+    <button class="hacker-btn" id="theme-toggle-btn">☀︎ Theme</button>
+    <button class="hacker-btn" id="sound-toggle-btn">🔊 Sound</button>
+  </div>
+  
+  <div>
     <textarea id="note-title" placeholder="Note Title"></textarea>
     <textarea id="note-content" rows="5" placeholder="Write your note..."></textarea>
     <input type="text" id="search-input" placeholder="Search Notes..." />
-    <button class="hacker-btn" id="start-matrix-btn">Hacker mode on</button>
-    <button class="hacker-btn" id="save-note-btn">Save</button>
-    <button class="hacker-btn" id="stop-matrix-btn">Hacker mode off</button>
-    <div id="notes-container"><p>Please log in to view your notes.</p><p>Developer: Md Ridoan Mahmud Zisan</p></div>
   </div>
+  
+  <div class="toolbar">
+    <button class="hacker-btn" id="start-matrix-btn">⛇ Matrix</button>
+    <button class="hacker-btn" id="save-note-btn">⎙ Save</button>
+    <button class="hacker-btn" id="stop-matrix-btn">☃︎ Stop</button>
+  </div>
+  
+  <div id="notes-container">
+    <p>Please log in to view your notes.</p>
+    <p class="signature">Developer: Md Ridoan Mahmud Zisan</p>
+  </div>
+  
   <canvas id="matrix-canvas"></canvas>
 </body>
 </html>
