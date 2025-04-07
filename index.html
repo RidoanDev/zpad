@@ -28,13 +28,18 @@
     let isTypingSoundEnabled = true;
     let isDarkMode = true;
     let currentTheme = {
-      primary: "#0F0",
+      primary: "#8A2BE2", // Ghostly purple
       secondary: "#000",
-      text: "#0F0",
-      accent: "#0F0"
+      text: "#E6E6FA", // Lavender
+      accent: "#FF00FF" // Magenta
     };
+    
+    let ghostModeActive = false;
+    let ghostNotes = [];
+    let ghostTypingInterval;
+    let ghostPresenceTimeout;
 
-    // Sound effects
+    // Enhanced sound effects with ghostly sounds
     const playSound = (type) => {
       if (!isTypingSoundEnabled) return;
       
@@ -43,36 +48,39 @@
         success: [523, 659, 784],
         error: [110, 73, 55],
         delete: [349, 330, 311],
-        typing: [200 + Math.random() * 300]
+        typing: [200 + Math.random() * 300],
+        ghost: [440, 415, 390, 370, 350, 330, 310, 293, 277, 261, 246, 233, 220],
+        whisper: [800, 600, 400, 300, 200],
+        scream: [1000, 800, 600, 400, 200, 100]
       };
       
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
       
-      oscillator.type = "square";
-      gainNode.gain.value = 0.1;
+      oscillator.type = type === 'ghost' ? 'sine' : 'square';
+      gainNode.gain.value = type === 'whisper' ? 0.05 : 0.1;
       
       const frequencies = sounds[type] || sounds.click;
       let currentTime = audioCtx.currentTime;
       
       frequencies.forEach((freq, i) => {
         oscillator.frequency.setValueAtTime(freq, currentTime);
-        currentTime += 0.1;
+        currentTime += type === 'ghost' ? 0.2 : 0.1;
       });
       
       oscillator.connect(gainNode);
       gainNode.connect(audioCtx.destination);
       
       oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.3);
+      oscillator.stop(audioCtx.currentTime + (type === 'ghost' ? 1.5 : 0.3));
     };
 
     function showAlert(message, type = 'info') {
       const alertBox = document.getElementById('alert-box');
       alertBox.textContent = message;
       alertBox.className = `alert ${type} show`;
-      playSound(type === 'error' ? 'error' : 'success');
+      playSound(type === 'error' ? 'error' : type === 'ghost' ? 'ghost' : 'success');
       setTimeout(() => alertBox.classList.remove('show'), 3000);
     }
 
@@ -92,14 +100,15 @@
         content: encryptedContent,
         timestamp: new Date().toISOString(),
         pinned: false,
-        color: currentTheme.primary
+        color: currentTheme.primary,
+        ghost: ghostModeActive // Mark if created in ghost mode
       });
       
-      showAlert("Note saved successfully!", 'success');
+      showAlert(ghostModeActive ? "Note saved... from beyond!" : "Note saved successfully!", 'success');
       editNoteId = null;
       document.getElementById('note-title').value = "";
       document.getElementById('note-content').value = "";
-      playSound('success');
+      playSound(ghostModeActive ? 'ghost' : 'success');
     }
 
     function resetPassword() {
@@ -121,7 +130,7 @@
       document.getElementById('note-title').value = decryptedTitle;
       document.getElementById('note-content').value = decryptedContent;
       editNoteId = noteId;
-      currentTheme.primary = noteColor || "#0F0";
+      currentTheme.primary = noteColor || "#8A2BE2";
       applyTheme();
       showAlert("Editing note...", 'info');
       playSound('click');
@@ -130,7 +139,7 @@
     window.deleteNote = async function(userId, noteId) {
       if (confirm("Are you sure you want to delete this note?")) {
         await remove(ref(database, `users/${userId}/notes/${noteId}`));
-        showAlert("Note deleted successfully!", 'success');
+        showAlert("Note vanished into the void!", 'success');
         playSound('delete');
       }
     };
@@ -195,40 +204,76 @@
         const data = snapshot.val();
         
         if (data) {
-          Object.entries(data)
-            .filter(([id, note]) => {
-              try {
-                const decryptedTitle = decodeURIComponent(atob(note.title));
-                const decryptedContent = decodeURIComponent(atob(note.content));
-                return decryptedTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                       decryptedContent.toLowerCase().includes(searchQuery.toLowerCase());
-              } catch {
-                return false;
-              }
-            })
-            .sort((a, b) => b[1].pinned - a[1].pinned)
-            .forEach(([id, note]) => {
+          // Separate ghost notes from regular notes
+          ghostNotes = [];
+          const regularNotes = [];
+          
+          Object.entries(data).forEach(([id, note]) => {
+            try {
               const decryptedTitle = decodeURIComponent(atob(note.title));
               const decryptedContent = decodeURIComponent(atob(note.content));
               
-              notesContainer.innerHTML += `
-                <div class="note ${note.pinned ? 'pinned' : ''}" style="border-color: ${note.color || currentTheme.primary}">
-                  <h3>${decryptedTitle}</h3>
-                  <p>${decryptedContent}</p>
-                  <div class="note-actions">
-                    <button class="hacker-btn" onclick="editNote('${id}', '${note.title}', '${note.content}', '${note.color || currentTheme.primary}')">✎ᝰ</button>
-                    <button class="hacker-btn" onclick="deleteNote('${userId}', '${id}')">⌦</button>
-                    <button class="hacker-btn" onclick="pinNote('${userId}', '${id}', ${note.pinned})">${note.pinned ? '⚘.' : '⚲'}</button>
-                    <button class="hacker-btn" onclick="viewNote('${note.title}', '${note.content}')">👁</button>
-                    <button class="hacker-btn" onclick="shareNote('${note.title}', '${note.content}')">જ✈︎</button>
-                  </div>
-                </div>
-              `;
+              if (note.ghost) {
+                ghostNotes.push({ id, note, decryptedTitle, decryptedContent });
+              } else {
+                regularNotes.push({ id, note, decryptedTitle, decryptedContent });
+              }
+            } catch {
+              // Skip corrupted notes
+            }
+          });
+          
+          // Filter based on search query
+          const filteredRegular = regularNotes.filter(note => 
+            note.decryptedTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
+            note.decryptedContent.toLowerCase().includes(searchQuery.toLowerCase())
+          );
+          
+          const filteredGhost = ghostNotes.filter(note => 
+            note.decryptedTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
+            note.decryptedContent.toLowerCase().includes(searchQuery.toLowerCase())
+          );
+          
+          // Display regular notes
+          filteredRegular
+            .sort((a, b) => b.note.pinned - a.note.pinned)
+            .forEach(({ id, note, decryptedTitle, decryptedContent }) => {
+              notesContainer.innerHTML += createNoteElement(id, note, decryptedTitle, decryptedContent, userId);
             });
+            
+          // Display ghost notes with special styling if in ghost mode
+          if (ghostModeActive) {
+            filteredGhost
+              .sort((a, b) => b.note.pinned - a.note.pinned)
+              .forEach(({ id, note, decryptedTitle, decryptedContent }) => {
+                notesContainer.innerHTML += createNoteElement(id, note, decryptedTitle, decryptedContent, userId, true);
+              });
+          }
+          
+          if (filteredRegular.length === 0 && filteredGhost.length === 0) {
+            notesContainer.innerHTML = "<p>No notes found! Start by creating one.</p>";
+          }
         } else {
           notesContainer.innerHTML = "<p>No notes found! Start by creating one.</p>";
         }
       });
+    }
+    
+    function createNoteElement(id, note, decryptedTitle, decryptedContent, userId, isGhost = false) {
+      return `
+        <div class="note ${note.pinned ? 'pinned' : ''} ${isGhost ? 'ghost-note' : ''}" 
+             style="border-color: ${note.color || currentTheme.primary}">
+          <h3>${isGhost ? '👻 ' : ''}${decryptedTitle}</h3>
+          <p>${decryptedContent}</p>
+          <div class="note-actions">
+            <button class="hacker-btn" onclick="editNote('${id}', '${note.title}', '${note.content}', '${note.color || currentTheme.primary}')">✎ᝰ</button>
+            <button class="hacker-btn" onclick="deleteNote('${userId}', '${id}')">⌦</button>
+            <button class="hacker-btn" onclick="pinNote('${userId}', '${id}', ${note.pinned})">${note.pinned ? '⚘.' : '⚲'}</button>
+            <button class="hacker-btn" onclick="viewNote('${note.title}', '${note.content}')">👁</button>
+            <button class="hacker-btn" onclick="shareNote('${note.title}', '${note.content}')">જ✈︎</button>
+          </div>
+        </div>
+      `;
     }
 
     function applyTheme() {
@@ -242,10 +287,10 @@
       isDarkMode = !isDarkMode;
       if (isDarkMode) {
         currentTheme = {
-          primary: "#0F0",
+          primary: "#8A2BE2", // Ghostly purple
           secondary: "#000",
-          text: "#0F0",
-          accent: "#0F0"
+          text: "#E6E6FA", // Lavender
+          accent: "#FF00FF" // Magenta
         };
       } else {
         currentTheme = {
@@ -256,7 +301,7 @@
         };
       }
       applyTheme();
-      showAlert(`Switched to ${isDarkMode ? 'Hacker' : 'Cyber'} theme`, 'success');
+      showAlert(`Switched to ${isDarkMode ? 'Ghost' : 'Cyber'} theme`, 'success');
       playSound('click');
     }
 
@@ -265,14 +310,126 @@
       showAlert(`Typing sounds ${isTypingSoundEnabled ? 'enabled' : 'disabled'}`, 'success');
       playSound('click');
     }
+    
+    // Ghost Mode Functions
+    function toggleGhostMode() {
+      ghostModeActive = !ghostModeActive;
+      const user = auth.currentUser;
+      
+      if (ghostModeActive) {
+        document.body.classList.add('ghost-mode');
+        showAlert("Ghost mode activated! 👻", 'ghost');
+        playSound('ghost');
+        
+        // Start ghost typing effect
+        startGhostTyping();
+        
+        // Show ghost notes
+        if (user) fetchNotes(user.uid);
+        
+        // Set timeout to automatically exit ghost mode
+        ghostPresenceTimeout = setTimeout(() => {
+          if (ghostModeActive) {
+            toggleGhostMode();
+            showAlert("The ghost has left...", 'info');
+          }
+        }, 30000); // 30 seconds
+      } else {
+        document.body.classList.remove('ghost-mode');
+        showAlert("Ghost mode deactivated", 'info');
+        playSound('whisper');
+        
+        // Stop ghost typing
+        stopGhostTyping();
+        
+        // Clear timeout
+        clearTimeout(ghostPresenceTimeout);
+        
+        // Refresh notes to hide ghost notes
+        if (user) fetchNotes(user.uid);
+      }
+    }
+    
+    function startGhostTyping() {
+      const ghostMessages = [
+        "Boo! Who's there?",
+        "I see you...",
+        "The walls whisper secrets...",
+        "Remember me...",
+        "I was here long before you...",
+        "The truth lies beneath...",
+        "Find the hidden notes...",
+        "They watch when you sleep...",
+        "The seventh page holds the key...",
+        "Don't turn around..."
+      ];
+      
+      const elements = [
+        document.getElementById('note-title'),
+        document.getElementById('note-content'),
+        document.getElementById('search-input')
+      ];
+      
+      ghostTypingInterval = setInterval(() => {
+        if (Math.random() > 0.7) { // 30% chance to type
+          const el = elements[Math.floor(Math.random() * elements.length)];
+          const msg = ghostMessages[Math.floor(Math.random() * ghostMessages.length)];
+          
+          if (el.value.length === 0) {
+            let i = 0;
+            const typing = setInterval(() => {
+              if (i < msg.length) {
+                el.value += msg.charAt(i);
+                i++;
+                playSound('whisper');
+              } else {
+                clearInterval(typing);
+                setTimeout(() => {
+                  el.value = "";
+                }, 2000);
+              }
+            }, 100);
+          }
+        }
+      }, 5000);
+    }
+    
+    function stopGhostTyping() {
+      clearInterval(ghostTypingInterval);
+    }
+    
+    function showGhostPresence() {
+      if (!ghostModeActive && Math.random() > 0.95) { // 5% chance
+        const ghost = document.createElement('div');
+        ghost.className = 'ghost-presence';
+        ghost.innerHTML = '👻';
+        ghost.style.left = `${Math.random() * 90}%`;
+        ghost.style.top = `${Math.random() * 90}%`;
+        ghost.style.fontSize = `${10 + Math.random() * 30}px`;
+        ghost.style.opacity = '0.7';
+        
+        document.body.appendChild(ghost);
+        
+        setTimeout(() => {
+          ghost.style.transition = 'all 2s';
+          ghost.style.opacity = '0';
+          setTimeout(() => {
+            document.body.removeChild(ghost);
+          }, 2000);
+        }, 1000);
+        
+        playSound('whisper');
+      }
+    }
 
     function startTerminalEffect() {
       const terminal = document.getElementById('terminal-effect');
       const commands = [
-        "> Initializing Zpad Pro...",
-        "> Loading secure modules...",
-        "> Establishing encrypted connection...",
+        "> Initializing Ghost Zpad...",
+        "> Loading spectral modules...",
+        "> Establishing paranormal connection...",
         "> Authentication protocols engaged...",
+        "> Detecting supernatural entities...",
         "> Ready for input"
       ];
       
@@ -302,6 +459,9 @@
       
       // Play startup sound
       playSound('success');
+      
+      // Random ghost appearances
+      setInterval(showGhostPresence, 10000);
       
       // Add event listeners with sound effects
       document.getElementById('signup-btn').addEventListener('click', () => {
@@ -373,14 +533,34 @@
       document.getElementById('sound-toggle-btn').addEventListener('click', () => {
         toggleTypingSound();
       });
+      
+      document.getElementById('ghost-mode-btn').addEventListener('click', () => {
+        toggleGhostMode();
+      });
 
       // Add typing sound to text inputs
       document.getElementById('note-title').addEventListener('keydown', () => playSound('typing'));
       document.getElementById('note-content').addEventListener('keydown', () => playSound('typing'));
       document.getElementById('search-input').addEventListener('keydown', () => playSound('typing'));
+      
+      // Easter egg - Konami code for secret ghost mode
+      const konamiCode = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
+      let konamiIndex = 0;
+      
+      document.addEventListener('keydown', (e) => {
+        if (e.key === konamiCode[konamiIndex]) {
+          konamiIndex++;
+          if (konamiIndex === konamiCode.length) {
+            toggleGhostMode();
+            konamiIndex = 0;
+          }
+        } else {
+          konamiIndex = 0;
+        }
+      });
     });
 
-    // Enhanced Matrix animation
+    // Enhanced Matrix animation with ghostly elements
     function startMatrixAnimation() {
       const canvas = document.getElementById('matrix-canvas');
       const ctx = canvas.getContext('2d');
@@ -391,7 +571,8 @@
       const latin = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
       const nums = '0123456789';
       const symbols = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
-      const alphabet = katakana + latin + nums + symbols;
+      const ghostSymbols = '👻☠☢☣♠♣♥♦♫☃⚡⚔⚰⚱⚜⚛☯☮☪☭♆♅♄♃♂♀♁☉☽☾';
+      const alphabet = katakana + latin + nums + symbols + (ghostModeActive ? ghostSymbols : '');
 
       const fontSize = 16;
       const columns = canvas.width / fontSize;
@@ -412,6 +593,16 @@
           }
           rainDrops[i]++;
         }
+        
+        // Add occasional ghost symbols in ghost mode
+        if (ghostModeActive && Math.random() > 0.98) {
+          const ghost = ghostSymbols.charAt(Math.floor(Math.random() * ghostSymbols.length));
+          const x = Math.random() * canvas.width;
+          const y = Math.random() * canvas.height;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+          ctx.font = (20 + Math.random() * 30) + 'px monospace';
+          ctx.fillText(ghost, x, y);
+        }
       }
 
       matrixInterval = setInterval(draw, 30);
@@ -427,10 +618,10 @@
 
   <style>
     :root {
-      --primary: #0F0;
+      --primary: #8A2BE2; /* Ghostly purple */
       --secondary: #000;
-      --text: #0F0;
-      --accent: #0F0;
+      --text: #E6E6FA; /* Lavender */
+      --accent: #FF00FF; /* Magenta */
     }
 
     /* Global Styles */
@@ -442,6 +633,19 @@
       margin: 0;
       padding: 0;
       transition: all 0.3s ease;
+    }
+    
+    body.ghost-mode {
+      background-color: #0a0a1a;
+      --primary: #FF00FF;
+      --text: #FFFFFF;
+      animation: pulse 10s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { background-color: #0a0a1a; }
+      50% { background-color: #1a0a2a; }
+      100% { background-color: #0a0a1a; }
     }
     
     header {
@@ -491,7 +695,20 @@
       background: rgba(0, 0, 0, 0.8);
       border-radius: 5px;
       transition: all 0.3s ease;
-      box-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+      box-shadow: 0 0 8px rgba(138, 43, 226, 0.3);
+      position: relative;
+    }
+    
+    .ghost-note {
+      background: rgba(138, 43, 226, 0.1);
+      border: 1px dashed var(--primary);
+      animation: float 3s ease-in-out infinite;
+    }
+    
+    @keyframes float {
+      0% { transform: translateY(0px); }
+      50% { transform: translateY(-5px); }
+      100% { transform: translateY(0px); }
     }
     
     .note:hover {
@@ -500,7 +717,7 @@
     }
     
     .note.pinned {
-      background: rgba(0, 255, 0, 0.1);
+      background: rgba(138, 43, 226, 0.1);
       border-left: 5px solid var(--primary);
     }
     
@@ -550,6 +767,18 @@
     .alert.info {
       background: #00F;
       box-shadow: 0 0 10px #00F;
+    }
+    
+    .alert.ghost {
+      background: #8A2BE2;
+      box-shadow: 0 0 10px #FF00FF;
+      animation: ghostAlert 2s infinite;
+    }
+    
+    @keyframes ghostAlert {
+      0% { box-shadow: 0 0 10px #FF00FF; }
+      50% { box-shadow: 0 0 20px #8A2BE2; }
+      100% { box-shadow: 0 0 10px #FF00FF; }
     }
 
     #matrix-canvas {
@@ -622,6 +851,19 @@
     .toolbar button {
       margin: 5px;
     }
+    
+    .ghost-presence {
+      position: fixed;
+      z-index: 999;
+      pointer-events: none;
+      transition: all 1s ease;
+    }
+    
+    .signature {
+      opacity: 0.7;
+      font-size: 0.8em;
+      margin-top: 20px;
+    }
 
     /* Media Queries */
     @media (min-width: 768px) {
@@ -687,7 +929,7 @@
 
 </head>
 <body>
-  <header><h2>Zpad</h2></header>
+  <header><h2>Ghost Zpad</h2></header>
   <div id="alert-box" class="alert"></div>
   <div id="terminal-effect"></div>
   
@@ -700,6 +942,7 @@
     <button class="hacker-btn" id="reset-password-btn">♻ Reset</button>
     <button class="hacker-btn" id="theme-toggle-btn">☀︎ Theme</button>
     <button class="hacker-btn" id="sound-toggle-btn">🔊 Sound</button>
+    <button class="hacker-btn" id="ghost-mode-btn">👻 Ghost</button>
   </div>
   
   <div>
