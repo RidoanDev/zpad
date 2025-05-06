@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zpad - Beautiful Notes</title>
+  <title>Zpad</title>
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
   <script type="module">
@@ -265,9 +265,6 @@
       document.getElementById('auth-email').focus();
     }
 
-    function getUserInitial(email) {
-      return email ? email.charAt(0).toUpperCase() : '?';
-    }
 
     window.addEventListener('DOMContentLoaded', () => {
       // Initialize color palette
@@ -366,7 +363,6 @@
       auth.onAuthStateChanged(user => {
         if (user) {
           fetchNotes(user.uid);
-          document.getElementById('user-avatar').textContent = getUserInitial(user.email);
           document.getElementById('auth-section').style.display = 'none';
           document.getElementById('user-section').style.display = 'flex';
           
@@ -597,18 +593,6 @@
       opacity: 1;
     }
 
-    .user-avatar {
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background-color: var(--accent-color);
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: bold;
-      cursor: pointer;
-    }
 
     /* Note Editor */
     .note-editor-overlay {
@@ -938,7 +922,6 @@
         </button>
       </div>
       <div id="user-section" style="display: none;">
-        <div id="user-avatar" class="user-avatar"></div>
         <button id="logout-btn" class="button secondary">
           <span class="material-icons">logout</span>
           Logout
